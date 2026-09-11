@@ -27,6 +27,7 @@
 
 pub mod ber;
 pub mod lines;
+pub mod loopback;
 pub mod pdu;
 pub mod target;
 pub mod v3;
@@ -317,9 +318,68 @@ impl Transport for SnmpTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use transport::loopback::Loopback;
 
     fn node() -> SnmpTransport {
         SnmpTransport::new("127.0.0.1:0", "public").timing_out_after(Duration::from_secs(2))
+    }
+
+    /// `len` bytes that a truncation, a reorder or a duplicate would change.
+    fn patterned(len: usize) -> Vec<u8> {
+        (0..len)
+            .map(|at| u8::try_from((at * 31 + at / 251) % 256).unwrap_or(0))
+            .collect()
+    }
+
+    #[test]
+    fn a_stream_rounds_as_one_set_the_agent_answers() {
+        let loopback = SnmpTransport::loopback();
+        let opaque: &[u8] = b"\x00line\r\nbreak \xff";
+        let arrived = loopback.round(opaque).expect("opaque");
+        assert_eq!(arrived.bytes, opaque);
+        assert!(
+            arrived.origin_uri.starts_with("snmp://127.0.0.1:"),
+            "{}",
+            arrived.origin_uri
+        );
+        assert!(
+            arrived
+                .origin_uri
+                .ends_with("?community=private&version=2c&oid=1.3.6.1.4.1.0.1.0&pdu=set"),
+            "{}",
+            arrived.origin_uri
+        );
+        let long = vec![0x2a; 5000];
+        assert_eq!(loopback.round(&long).expect("long").bytes, long);
+        assert!(loopback.round(b"").expect("empty").bytes.is_empty());
+        assert_eq!(loopback.ceiling(), Some(loopback::ceiling()));
+        assert!(loopback.refuses(opaque).is_none());
+    }
+
+    #[test]
+    fn the_loopback_returns_the_edges_whole_and_refuses_over_the_ceiling() {
+        let ceiling = loopback::ceiling();
+        assert!((65_000..MAX_DATAGRAM).contains(&ceiling), "{ceiling}");
+        let loopback = SnmpTransport::loopback();
+        let edges: [(&str, Vec<u8>); 7] = [
+            ("empty", Vec::new()),
+            ("one byte", vec![0x2a]),
+            ("every byte", (0..=255).collect()),
+            ("nul run", vec![0; 512]),
+            ("high bytes", vec![0xff; 512]),
+            ("crlf storm", b"\r\n".repeat(400)),
+            ("brim", patterned(ceiling)),
+        ];
+        for (name, payload) in edges {
+            assert_eq!(
+                loopback.round(&payload).expect(name).bytes,
+                payload,
+                "{name}"
+            );
+        }
+        let over = loopback.round(&vec![0; ceiling + 1]).expect_err("over");
+        assert!(over.message.starts_with("send failed:"), "{over}");
+        assert!(over.message.contains("one SET carries"), "{over}");
     }
 
     #[test]
