@@ -6,8 +6,6 @@
 //! one ambiguity accepted: text that happens to be digits or dotted numbers
 //! reads back as an INTEGER or an OBJECT IDENTIFIER.
 
-use std::fmt::Write;
-
 use crate::ber::{self, Value};
 use crate::pdu::Binding;
 use transport::error::{Result, protocol_error};
@@ -42,7 +40,10 @@ pub fn parse_value(text: &str) -> Value {
     if let Ok(n) = text.parse::<i64>() {
         return Value::Integer(n);
     }
-    if let Some(bytes) = text.strip_prefix("0x").and_then(unhex) {
+    if let Some(bytes) = text
+        .strip_prefix("0x")
+        .and_then(|digits| transport::hex::unhex(digits).ok())
+    {
         return Value::OctetString(bytes);
     }
     if let Some(arcs) = ber::parse_oid(text).filter(|_| text.contains('.')) {
@@ -51,23 +52,9 @@ pub fn parse_value(text: &str) -> Value {
     Value::OctetString(text.as_bytes().to_vec())
 }
 
+/// Octets a line cannot show as text: `0x` and the pairs.
 fn hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(2 + bytes.len() * 2);
-    out.push_str("0x");
-    for byte in bytes {
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
-}
-
-fn unhex(digits: &str) -> Option<Vec<u8>> {
-    if !digits.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..digits.len())
-        .step_by(2)
-        .map(|at| u8::from_str_radix(digits.get(at..at + 2)?, 16).ok())
-        .collect()
+    format!("0x{}", transport::hex::hex(bytes))
 }
 
 /// `bindings` as the Stream: one `oid=value` line each, newline-terminated.

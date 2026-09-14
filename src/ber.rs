@@ -1,16 +1,15 @@
-//! X.690 BER, the ten tags SNMP is made of: INTEGER, OCTET STRING, NULL,
-//! OBJECT IDENTIFIER, SEQUENCE, the constructed context tags a PDU wears,
-//! the four unsigned application types, `IpAddress` and the three exceptions
-//! a response carries where a value would be. Lengths read and write in
-//! short and long form; the indefinite form is refused, as SNMP requires.
+//! The BER values SNMP is made of, on the capability's X.690 tag-length-value
+//! (`transport::ber`, shared with iec-61850 under ADR-0044): INTEGER, OCTET
+//! STRING, NULL, OBJECT IDENTIFIER, SEQUENCE, the constructed context tags a
+//! PDU wears, the four unsigned application types, `IpAddress` and the three
+//! exceptions a response carries where a value would be. What is here is the
+//! dialect — which tags, and what their contents mean; the framing, the
+//! length forms and the INTEGER encoding are the capability's, and the
+//! indefinite length form is refused there, as SNMP requires.
 
+use transport::ber::{self, INTEGER, NULL, OBJECT_IDENTIFIER, OCTET_STRING, SEQUENCE};
 use transport::error::{Result, protocol_error};
 
-pub const TAG_INTEGER: u8 = 0x02;
-pub const TAG_OCTET_STRING: u8 = 0x04;
-pub const TAG_NULL: u8 = 0x05;
-pub const TAG_OID: u8 = 0x06;
-pub const TAG_SEQUENCE: u8 = 0x30;
 pub const TAG_IP_ADDRESS: u8 = 0x40;
 pub const TAG_COUNTER32: u8 = 0x41;
 pub const TAG_GAUGE32: u8 = 0x42;
@@ -91,15 +90,15 @@ impl Value {
 /// Append `value` to `out`.
 pub fn encode(value: &Value, out: &mut Vec<u8>) {
     match value {
-        Value::Integer(n) => tlv(out, TAG_INTEGER, &integer_bytes(*n)),
-        Value::OctetString(bytes) => tlv(out, TAG_OCTET_STRING, bytes),
-        Value::Null => tlv(out, TAG_NULL, &[]),
-        Value::Oid(arcs) => tlv(out, TAG_OID, &oid_bytes(arcs)),
-        Value::Sequence(items) => constructed(out, TAG_SEQUENCE, items),
+        Value::Integer(n) => ber::write_tlv(out, INTEGER, &ber::integer(*n)),
+        Value::OctetString(bytes) => ber::write_tlv(out, OCTET_STRING, bytes),
+        Value::Null => ber::write_tlv(out, NULL, &[]),
+        Value::Oid(arcs) => ber::write_tlv(out, OBJECT_IDENTIFIER, &oid_bytes(arcs)),
+        Value::Sequence(items) => constructed(out, SEQUENCE, items),
         Value::Context(tag, items) => constructed(out, *tag, items),
-        Value::Unsigned(tag, n) => tlv(out, *tag, &unsigned_bytes(*n)),
-        Value::IpAddress(address) => tlv(out, TAG_IP_ADDRESS, address),
-        Value::Exception(tag) => tlv(out, *tag, &[]),
+        Value::Unsigned(tag, n) => ber::write_tlv(out, *tag, &unsigned_bytes(*n)),
+        Value::IpAddress(address) => ber::write_tlv(out, TAG_IP_ADDRESS, address),
+        Value::Exception(tag) => ber::write_tlv(out, *tag, &[]),
     }
 }
 
@@ -116,44 +115,7 @@ fn constructed(out: &mut Vec<u8>, tag: u8, items: &[Value]) {
     for item in items {
         encode(item, &mut body);
     }
-    tlv(out, tag, &body);
-}
-
-fn tlv(out: &mut Vec<u8>, tag: u8, body: &[u8]) {
-    out.push(tag);
-    length(out, body.len());
-    out.extend_from_slice(body);
-}
-
-/// A length, short form under 128 and long form from there.
-fn length(out: &mut Vec<u8>, len: usize) {
-    if len < 0x80 {
-        out.push(u8::try_from(len).unwrap_or(0x7f));
-        return;
-    }
-    let bytes = len.to_be_bytes();
-    let skip = bytes
-        .iter()
-        .position(|b| *b != 0)
-        .unwrap_or(bytes.len() - 1);
-    let significant = &bytes[skip..];
-    out.push(0x80 | u8::try_from(significant.len()).unwrap_or(0));
-    out.extend_from_slice(significant);
-}
-
-/// Two's complement, the fewest bytes that keep the sign.
-fn integer_bytes(n: i64) -> Vec<u8> {
-    let bytes = n.to_be_bytes();
-    let mut start = 0;
-    while start + 1 < bytes.len() {
-        let redundant = (bytes[start] == 0x00 && bytes[start + 1] & 0x80 == 0)
-            || (bytes[start] == 0xff && bytes[start + 1] & 0x80 != 0);
-        if !redundant {
-            break;
-        }
-        start += 1;
-    }
-    bytes[start..].to_vec()
+    ber::write_tlv(out, tag, &body);
 }
 
 /// The fewest bytes, a leading zero where the top bit would read as a sign.
@@ -217,16 +179,17 @@ pub fn decode(bytes: &[u8]) -> Result<Value> {
 /// A tag this file does not know, a length that runs past the end or is
 /// indefinite, an INTEGER over eight bytes, an arc over what `u32` holds.
 pub fn read(bytes: &[u8], at: usize) -> Result<(Value, usize)> {
-    let tag = *bytes.get(at).ok_or_else(short)?;
-    let (len, start) = read_length(bytes, at + 1)?;
-    let end = start + len;
-    let body = bytes.get(start..end).ok_or_else(short)?;
+    let element = bytes
+        .get(at..)
+        .ok_or_else(|| protocol_error("a value shorter than its length"))?;
+    let (tag, body, rest) = ber::read(element)?;
+    let end = bytes.len() - rest.len();
     let value = match tag {
-        TAG_INTEGER => Value::Integer(read_integer(body)?),
-        TAG_OCTET_STRING => Value::OctetString(body.to_vec()),
-        TAG_NULL => Value::Null,
-        TAG_OID => Value::Oid(read_oid(body)?),
-        TAG_SEQUENCE => Value::Sequence(read_items(body)?),
+        INTEGER => Value::Integer(ber::read_integer(body)?),
+        OCTET_STRING => Value::OctetString(body.to_vec()),
+        NULL => Value::Null,
+        OBJECT_IDENTIFIER => Value::Oid(read_oid(body)?),
+        SEQUENCE => Value::Sequence(read_items(body)?),
         0xA0..=0xAF => Value::Context(tag, read_items(body)?),
         TAG_IP_ADDRESS => {
             let octets: [u8; 4] = body
@@ -245,37 +208,6 @@ pub fn read(bytes: &[u8], at: usize) -> Result<(Value, usize)> {
         }
     };
     Ok((value, end))
-}
-
-fn short() -> transport::TransportError {
-    protocol_error("a value shorter than its length")
-}
-
-fn read_length(bytes: &[u8], at: usize) -> Result<(usize, usize)> {
-    let first = *bytes.get(at).ok_or_else(short)?;
-    if first < 0x80 {
-        return Ok((usize::from(first), at + 1));
-    }
-    let count = usize::from(first & 0x7f);
-    if count == 0 || count > 4 {
-        return Err(protocol_error("an indefinite or oversized length"));
-    }
-    let digits = bytes.get(at + 1..at + 1 + count).ok_or_else(short)?;
-    let len = digits
-        .iter()
-        .fold(0usize, |acc, digit| (acc << 8) | usize::from(*digit));
-    Ok((len, at + 1 + count))
-}
-
-fn read_integer(body: &[u8]) -> Result<i64> {
-    if body.is_empty() || body.len() > 8 {
-        return Err(protocol_error("an INTEGER of no bytes or over eight"));
-    }
-    let mut value: i64 = if body[0] & 0x80 != 0 { -1 } else { 0 };
-    for byte in body {
-        value = (value << 8) | i64::from(*byte);
-    }
-    Ok(value)
 }
 
 fn read_unsigned(body: &[u8]) -> Result<u64> {
