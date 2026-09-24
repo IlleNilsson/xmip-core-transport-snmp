@@ -42,7 +42,7 @@ pub fn parse_value(text: &str) -> Value {
     }
     if let Some(bytes) = text
         .strip_prefix("0x")
-        .and_then(|digits| transport::hex::unhex(digits).ok())
+        .and_then(|digits| codec::hex::decode(digits).ok())
     {
         return Value::OctetString(bytes);
     }
@@ -54,7 +54,7 @@ pub fn parse_value(text: &str) -> Value {
 
 /// Octets a line cannot show as text: `0x` and the pairs.
 fn hex(bytes: &[u8]) -> String {
-    format!("0x{}", transport::hex::hex(bytes))
+    format!("0x{}", codec::hex::encode(bytes))
 }
 
 /// `bindings` as the Stream: one `oid=value` line each, newline-terminated.

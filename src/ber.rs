@@ -1,13 +1,17 @@
-//! The BER values SNMP is made of, on the capability's X.690 tag-length-value
-//! (`transport::ber`, shared with iec-61850 under ADR-0044): INTEGER, OCTET
+//! The BER values SNMP is made of, on the estate's X.690 tag-length-value
+//! (`xmip-core-library-asn1`, shared with iec-61850): INTEGER, OCTET
 //! STRING, NULL, OBJECT IDENTIFIER, SEQUENCE, the constructed context tags a
 //! PDU wears, the four unsigned application types, `IpAddress` and the three
 //! exceptions a response carries where a value would be. What is here is the
 //! dialect — which tags, and what their contents mean; the framing, the
-//! length forms and the INTEGER encoding are the capability's, and the
-//! indefinite length form is refused there, as SNMP requires.
+//! length forms and the INTEGER and OBJECT IDENTIFIER encodings are the
+//! library's, and the indefinite length form is refused there, as SNMP
+//! requires.
 
-use transport::ber::{self, INTEGER, NULL, OBJECT_IDENTIFIER, OCTET_STRING, SEQUENCE};
+use asn1::{
+    INTEGER, NULL, OBJECT_IDENTIFIER, OCTET_STRING, SEQUENCE, object_identifier,
+    read_object_identifier, write_tlv,
+};
 use transport::error::{Result, protocol_error};
 
 pub const TAG_IP_ADDRESS: u8 = 0x40;
@@ -90,15 +94,15 @@ impl Value {
 /// Append `value` to `out`.
 pub fn encode(value: &Value, out: &mut Vec<u8>) {
     match value {
-        Value::Integer(n) => ber::write_tlv(out, INTEGER, &ber::integer(*n)),
-        Value::OctetString(bytes) => ber::write_tlv(out, OCTET_STRING, bytes),
-        Value::Null => ber::write_tlv(out, NULL, &[]),
-        Value::Oid(arcs) => ber::write_tlv(out, OBJECT_IDENTIFIER, &oid_bytes(arcs)),
+        Value::Integer(n) => write_tlv(out, INTEGER, &asn1::integer(*n)),
+        Value::OctetString(bytes) => write_tlv(out, OCTET_STRING, bytes),
+        Value::Null => write_tlv(out, NULL, &[]),
+        Value::Oid(arcs) => write_tlv(out, OBJECT_IDENTIFIER, &object_identifier(arcs)),
         Value::Sequence(items) => constructed(out, SEQUENCE, items),
         Value::Context(tag, items) => constructed(out, *tag, items),
-        Value::Unsigned(tag, n) => ber::write_tlv(out, *tag, &unsigned_bytes(*n)),
-        Value::IpAddress(address) => ber::write_tlv(out, TAG_IP_ADDRESS, address),
-        Value::Exception(tag) => ber::write_tlv(out, *tag, &[]),
+        Value::Unsigned(tag, n) => write_tlv(out, *tag, &unsigned_bytes(*n)),
+        Value::IpAddress(address) => write_tlv(out, TAG_IP_ADDRESS, address),
+        Value::Exception(tag) => write_tlv(out, *tag, &[]),
     }
 }
 
@@ -115,7 +119,7 @@ fn constructed(out: &mut Vec<u8>, tag: u8, items: &[Value]) {
     for item in items {
         encode(item, &mut body);
     }
-    ber::write_tlv(out, tag, &body);
+    write_tlv(out, tag, &body);
 }
 
 /// The fewest bytes, a leading zero where the top bit would read as a sign.
@@ -131,34 +135,6 @@ fn unsigned_bytes(n: u64) -> Vec<u8> {
     }
     out.extend_from_slice(&bytes[skip..]);
     out
-}
-
-/// The first two arcs folded into one, the rest base 128.
-fn oid_bytes(arcs: &[u32]) -> Vec<u8> {
-    let mut out = Vec::new();
-    let first = arcs.first().copied().unwrap_or(0) * 40 + arcs.get(1).copied().unwrap_or(0);
-    base128(&mut out, first);
-    for arc in arcs.iter().skip(2) {
-        base128(&mut out, *arc);
-    }
-    out
-}
-
-fn base128(out: &mut Vec<u8>, mut arc: u32) {
-    let mut stack = [0u8; 5];
-    let mut count = 0;
-    loop {
-        stack[count] = u8::try_from(arc & 0x7f).unwrap_or(0);
-        count += 1;
-        arc >>= 7;
-        if arc == 0 {
-            break;
-        }
-    }
-    for index in (0..count).rev() {
-        let more = if index == 0 { 0 } else { 0x80 };
-        out.push(stack[index] | more);
-    }
 }
 
 /// Exactly one value, nothing after it.
@@ -182,13 +158,13 @@ pub fn read(bytes: &[u8], at: usize) -> Result<(Value, usize)> {
     let element = bytes
         .get(at..)
         .ok_or_else(|| protocol_error("a value shorter than its length"))?;
-    let (tag, body, rest) = ber::read(element)?;
+    let (tag, body, rest) = asn1::read(element)?;
     let end = bytes.len() - rest.len();
     let value = match tag {
-        INTEGER => Value::Integer(ber::read_integer(body)?),
+        INTEGER => Value::Integer(asn1::read_integer(body)?),
         OCTET_STRING => Value::OctetString(body.to_vec()),
         NULL => Value::Null,
-        OBJECT_IDENTIFIER => Value::Oid(read_oid(body)?),
+        OBJECT_IDENTIFIER => Value::Oid(read_object_identifier(body)?),
         SEQUENCE => Value::Sequence(read_items(body)?),
         0xA0..=0xAF => Value::Context(tag, read_items(body)?),
         TAG_IP_ADDRESS => {
@@ -218,38 +194,6 @@ fn read_unsigned(body: &[u8]) -> Result<u64> {
     Ok(digits
         .iter()
         .fold(0u64, |acc, digit| (acc << 8) | u64::from(*digit)))
-}
-
-fn read_oid(body: &[u8]) -> Result<Vec<u32>> {
-    if body.is_empty() {
-        return Err(protocol_error("an empty OBJECT IDENTIFIER"));
-    }
-    let mut arcs = Vec::new();
-    let mut arc: u32 = 0;
-    for byte in body {
-        if arc >= (1 << 25) {
-            return Err(protocol_error("an arc over what u32 holds"));
-        }
-        arc = (arc << 7) | u32::from(byte & 0x7f);
-        if byte & 0x80 == 0 {
-            if arcs.is_empty() {
-                let (first, second) = if arc < 80 {
-                    (arc / 40, arc % 40)
-                } else {
-                    (2, arc - 80)
-                };
-                arcs.push(first);
-                arcs.push(second);
-            } else {
-                arcs.push(arc);
-            }
-            arc = 0;
-        }
-    }
-    if body.last().is_some_and(|b| b & 0x80 != 0) {
-        return Err(protocol_error("an arc that does not end"));
-    }
-    Ok(arcs)
 }
 
 fn read_items(body: &[u8]) -> Result<Vec<Value>> {
