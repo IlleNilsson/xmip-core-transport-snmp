@@ -14,6 +14,8 @@
 use std::net::UdpSocket;
 use std::sync::OnceLock;
 
+use transport::bound::Bound;
+use transport::ceiling;
 use transport::error::{Result, classify, protocol_error};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::{Arrived, Transport};
@@ -52,47 +54,35 @@ impl SnmpTransport {
     }
 }
 
-/// A bound agent waiting for its one SET.
-struct Agent {
-    socket: UdpSocket,
-    address: String,
-}
-
-impl FarEnd for Agent {
-    fn address(&self) -> &str {
-        &self.address
-    }
-
-    fn take_one(self: Box<Self>) -> Result<Arrived> {
-        let mut buffer = vec![0u8; MAX_DATAGRAM];
-        let (read, peer) = self
-            .socket
-            .recv_from(&mut buffer)
-            .map_err(|e| classify("receiving the request", &e))?;
-        let request = Envelope::decode(&buffer[..read])?;
-        let pdu = request.pdu();
-        if pdu.kind != PduType::SetRequest {
-            return Err(protocol_error(format!(
-                "a {} where a set was due",
-                pdu.kind.name()
-            )));
-        }
-        let binding = pdu
-            .bindings
-            .first()
-            .ok_or_else(|| protocol_error("a set binding nothing"))?;
-        let bytes = binding.value.octets()?.to_vec();
-        self.socket
-            .send_to(&request.answering(pdu.response(0)).encode(), peer)
-            .map_err(|e| classify("answering the set", &e))?;
-        let origin = format!(
-            "snmp://{peer}?{}&oid={}&pdu={}",
-            request.credential(),
-            ber::oid_text(&binding.oid),
+/// A bound agent's one SET, answered, and what it set.
+fn agent(socket: &UdpSocket) -> Result<Arrived> {
+    let mut buffer = vec![0u8; MAX_DATAGRAM];
+    let (read, peer) = socket
+        .recv_from(&mut buffer)
+        .map_err(|e| classify("receiving the request", &e))?;
+    let request = Envelope::decode(&buffer[..read])?;
+    let pdu = request.pdu();
+    if pdu.kind != PduType::SetRequest {
+        return Err(protocol_error(format!(
+            "a {} where a set was due",
             pdu.kind.name()
-        );
-        Ok(Arrived::new(origin, bytes))
+        )));
     }
+    let binding = pdu
+        .bindings
+        .first()
+        .ok_or_else(|| protocol_error("a set binding nothing"))?;
+    let bytes = binding.value.octets()?.to_vec();
+    socket
+        .send_to(&request.answering(pdu.response(0)).encode(), peer)
+        .map_err(|e| classify("answering the set", &e))?;
+    let origin = format!(
+        "snmp://{peer}?{}&oid={}&pdu={}",
+        request.credential(),
+        ber::oid_text(&binding.oid),
+        pdu.kind.name()
+    );
+    Ok(Arrived::new(origin, bytes))
 }
 
 impl Loopback for SnmpTransport {
@@ -101,20 +91,13 @@ impl Loopback for SnmpTransport {
     }
 
     fn far_end(&self) -> Result<Box<dyn FarEnd>> {
-        let (socket, address) = self.bind_udp()?;
-        Ok(Box::new(Agent { socket, address }))
+        Ok(Box::new(Bound::new(agent, self.bind_udp()?)))
     }
 
     /// A fresh manager SETs [`OID`] at the agent to the payload; the
     /// request id is the 1 the ceiling was measured with.
     fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
-        if payload.len() > ceiling() {
-            return Err(protocol_error(format!(
-                "{} bytes is over the {} one SET carries in a datagram",
-                payload.len(),
-                ceiling()
-            )));
-        }
+        ceiling::within(payload.len(), ceiling(), "one SET carries in a datagram")?;
         let target = format!("snmp+set://{address}/{}", ber::oid_text(&OID));
         Self::loopback().send(&target, payload)
     }
