@@ -101,8 +101,4 @@ impl Loopback for SnmpTransport {
         let target = format!("snmp+set://{address}/{}", ber::oid_text(&OID));
         Self::loopback().send(&target, payload)
     }
-
-    fn unblock(&self, _address: &str) {
-        // The receive has its own timeout; there is no listener to poke.
-    }
 }
