@@ -47,6 +47,7 @@ pub use ber::Value;
 pub use pdu::{Binding, Message, Pdu, PduType};
 pub use target::{Action, SnmpTarget};
 use transport::error::{Result, classify, protocol_error};
+use transport::kept::Kept;
 use transport::sender::Sender;
 use transport::socket;
 use transport::{Arrived, Directions, Transport};
@@ -135,6 +136,8 @@ pub struct SnmpTransport {
     next_id: AtomicI32,
     /// The socket every message leaves from, bound once.
     sender: Sender,
+    /// The socket the first receive binds, and every receive reads.
+    receiving: Kept<UdpSocket>,
 }
 
 impl SnmpTransport {
@@ -152,6 +155,7 @@ impl SnmpTransport {
             started: Instant::now(),
             next_id: AtomicI32::new(1),
             sender: Sender::new(),
+            receiving: Kept::new(),
         }
     }
 
@@ -294,9 +298,11 @@ impl Transport for SnmpTransport {
         Directions::BOTH
     }
 
+    /// One trap or inform, from the socket the first receive bound and
+    /// kept: what arrived between two receives waits in its buffer.
     fn receive(&self) -> Result<Vec<Arrived>> {
-        let (socket, _) = self.bind_udp()?;
-        Ok(vec![self.receive_datagram(&socket)?])
+        let socket = self.receiving.bound(|| self.bind_udp())?;
+        Ok(vec![self.receive_datagram(socket)?])
     }
 
     fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
@@ -384,6 +390,28 @@ mod tests {
         let over = loopback.round(&vec![0; ceiling + 1]).expect_err("over");
         assert!(over.message.starts_with("send failed:"), "{over}");
         assert!(over.message.contains("one SET carries"), "{over}");
+    }
+
+    #[test]
+    fn every_receive_reads_the_socket_the_first_bound() {
+        // Every trap lands before any receive: in the kept socket's buffer,
+        // taken in order by receives that bind nothing.
+        let far_end = node();
+        far_end
+            .receiving
+            .bound(|| far_end.bind_udp())
+            .expect("bound");
+        let address = far_end.receiving.address().expect("address");
+        let agent = node();
+        for round in 0..5 {
+            let binding = format!("1.3.6.1.4.1.9.9.1.0=round {round}\n");
+            agent.send(address, binding.as_bytes()).expect("trapped");
+        }
+        for round in 0..5 {
+            let arrived = far_end.receive().expect("received");
+            let text = String::from_utf8(arrived[0].bytes.clone()).expect("text");
+            assert!(text.ends_with(&format!("=round {round}\n")), "{text}");
+        }
     }
 
     #[test]
