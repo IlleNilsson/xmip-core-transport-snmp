@@ -24,11 +24,18 @@
 //! `host:port` as a trap with everything as configured. A trap's bindings
 //! are the bytes' `oid=value` lines; `sysUpTime.0` and `snmpTrapOID.0` are
 //! put first when the lines do not open with them.
+//!
+//! A trap's or an inform's Stream is text by the technology's own
+//! declaration (ADR-0038): UTF-8 `oid=value` lines, one binding each; a
+//! SET carries its bytes as they are. Bytes that are not UTF-8, or a line
+//! that is not a binding, are refused with the reason, never guessed at; an
+//! OCTET STRING that is not text is written as `0x` hex.
 
 pub mod ber;
 pub mod lines;
 pub mod loopback;
 pub mod pdu;
+mod settings;
 pub mod target;
 pub mod v3;
 
@@ -49,6 +56,9 @@ pub use v3::V3Message;
 pub const MAX_DATAGRAM: usize = 65_507;
 /// `genErr`, the error status an unwanted request is answered with.
 pub const GEN_ERR: i32 = 5;
+/// What an engine id in its text form opens with (RFC 3411): enterprise 0
+/// with the format bit set, then format 4, text. The text follows.
+pub const TEXT_ENGINE: [u8; 5] = [0x80, 0x00, 0x00, 0x00, 0x04];
 
 /// A message as it came, whichever version wrapped it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -134,7 +144,7 @@ impl SnmpTransport {
             community: community.to_string(),
             user: "xmip".to_string(),
             version: pdu::VERSION_2C,
-            engine_id: b"\x80\x00\x00\x00\x04xmip".to_vec(),
+            engine_id: [&TEXT_ENGINE[..], b"xmip"].concat(),
             timeout: None,
             started: Instant::now(),
             next_id: AtomicI32::new(1),
