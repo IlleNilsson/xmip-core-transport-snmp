@@ -18,6 +18,9 @@ path = "src/lib.rs"
 # (repository-model.md). Standard library otherwise: SNMP is BER over a
 # datagram, and the BER it needs is ten tags.
 transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main" }
+# The settings this technology declares (xcore::settings), read through
+# transport::Configured (ADR-0064, amendment 2026-09-26).
+xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
 # X.690, the tag-length-value and the INTEGER and OBJECT IDENTIFIER
 # contents SNMP's values are read and written with.
 asn1 = { package = "xmip-core-library-asn1", git = "https://github.com/IlleNilsson/xmip-core-library-asn1", branch = "main" }
@@ -39,3 +42,6 @@ missing_errors_doc = "warn"
 missing_panics_doc = "warn"
 unwrap_used = "warn"
 expect_used = "allow"
+
+[profile.dev.package."*"]
+opt-level = 3
