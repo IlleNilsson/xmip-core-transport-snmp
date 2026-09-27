@@ -47,6 +47,7 @@ pub use ber::Value;
 pub use pdu::{Binding, Message, Pdu, PduType};
 pub use target::{Action, SnmpTarget};
 use transport::error::{Result, classify, protocol_error};
+use transport::sender::Sender;
 use transport::socket;
 use transport::{Arrived, Directions, Transport};
 pub use v3::V3Message;
@@ -132,6 +133,8 @@ pub struct SnmpTransport {
     timeout: Option<Duration>,
     started: Instant,
     next_id: AtomicI32,
+    /// The socket every message leaves from, bound once.
+    sender: Sender,
 }
 
 impl SnmpTransport {
@@ -148,6 +151,7 @@ impl SnmpTransport {
             timeout: None,
             started: Instant::now(),
             next_id: AtomicI32::new(1),
+            sender: Sender::new(),
         }
     }
 
@@ -235,22 +239,25 @@ impl SnmpTransport {
 
     /// Send `request` to `address` and take the response to it.
     fn exchange(&self, address: &str, request: &Envelope) -> Result<Option<Envelope>> {
-        let sender =
-            UdpSocket::bind("0.0.0.0:0").map_err(|e| classify("binding the sending socket", &e))?;
-        sender
-            .set_read_timeout(self.timeout)
-            .map_err(|e| classify("setting the answer timeout", &e))?;
-        sender
-            .send_to(&request.encode(), address)
-            .map_err(|e| classify("sending the message", &e))?;
-        if request.pdu().kind == PduType::Trap {
+        let response = self.sender.exchange(address, |sender, peer| {
+            sender
+                .set_read_timeout(self.timeout)
+                .map_err(|e| classify("setting the answer timeout", &e))?;
+            sender
+                .send_to(&request.encode(), peer)
+                .map_err(|e| classify("sending the message", &e))?;
+            if request.pdu().kind == PduType::Trap {
+                return Ok(None);
+            }
+            let mut buffer = vec![0u8; MAX_DATAGRAM];
+            let read = sender
+                .recv(&mut buffer)
+                .map_err(|e| classify("awaiting the response", &e))?;
+            Envelope::decode(&buffer[..read]).map(Some)
+        })?;
+        let Some(response) = response else {
             return Ok(None);
-        }
-        let mut buffer = vec![0u8; MAX_DATAGRAM];
-        let read = sender
-            .recv(&mut buffer)
-            .map_err(|e| classify("awaiting the response", &e))?;
-        let response = Envelope::decode(&buffer[..read])?;
+        };
         let answer = response.pdu();
         if answer.request_id != request.pdu().request_id || answer.kind != PduType::GetResponse {
             return Err(protocol_error("a response to another request"));
