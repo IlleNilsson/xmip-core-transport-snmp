@@ -14,13 +14,13 @@
 use std::net::UdpSocket;
 use std::sync::OnceLock;
 
+use net::ceiling;
 use transport::bound::Bound;
-use transport::ceiling;
 use transport::error::{Result, classify, protocol_error};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::{Arrived, Transport};
 
-use crate::{Binding, Envelope, MAX_DATAGRAM, Message, Pdu, PduType, SnmpTransport, Value, ber};
+use crate::{Binding, Envelope, MAX_DATAGRAM, Message, Pdu, PduType, SnmpTransport, Value};
 
 /// The object one SET binds: a scratch object under enterprise 0.
 pub const OID: [u32; 9] = [1, 3, 6, 1, 4, 1, 0, 1, 0];
@@ -79,7 +79,7 @@ fn agent(socket: &UdpSocket) -> Result<Arrived> {
     let origin = format!(
         "snmp://{peer}?{}&oid={}&pdu={}",
         request.credential(),
-        ber::oid_text(&binding.oid),
+        asn1::dotted(&binding.oid),
         pdu.kind.name()
     );
     Ok(Arrived::new(origin, bytes))
@@ -98,7 +98,7 @@ impl Loopback for SnmpTransport {
     /// request id is the 1 the ceiling was measured with.
     fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
         ceiling::within(payload.len(), ceiling(), "one SET carries in a datagram")?;
-        let target = format!("snmp+set://{address}/{}", ber::oid_text(&OID));
+        let target = format!("snmp+set://{address}/{}", asn1::dotted(&OID));
         Self::loopback().send(&target, payload)
     }
 }

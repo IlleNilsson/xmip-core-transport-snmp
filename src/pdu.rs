@@ -15,9 +15,9 @@ pub const VERSION_2C: i64 = 1;
 /// `version` as SNMP v3 writes it.
 pub const VERSION_3: i64 = 3;
 /// `sysUpTime.0`, the first binding of every notification.
-pub const SYS_UPTIME: [u32; 9] = [1, 3, 6, 1, 2, 1, 1, 3, 0];
+const SYS_UPTIME: [u32; 9] = [1, 3, 6, 1, 2, 1, 1, 3, 0];
 /// `snmpTrapOID.0`, the second.
-pub const SNMP_TRAP_OID: [u32; 11] = [1, 3, 6, 1, 6, 3, 1, 1, 4, 1, 0];
+const SNMP_TRAP_OID: [u32; 11] = [1, 3, 6, 1, 6, 3, 1, 1, 4, 1, 0];
 /// `zeroDotZero`, RFC 2578: what a notification names when nobody named one.
 pub const ZERO_DOT_ZERO: [u32; 2] = [0, 0];
 
@@ -99,7 +99,7 @@ impl Binding {
     /// `oid=value`, the line a Stream carries.
     #[must_use]
     pub fn line(&self) -> String {
-        format!("{}={}", ber::oid_text(&self.oid), render_value(&self.value))
+        format!("{}={}", asn1::dotted(&self.oid), render_value(&self.value))
     }
 
     /// The binding written as `oid=value`.
@@ -110,7 +110,7 @@ impl Binding {
         let (name, value) = line
             .split_once('=')
             .ok_or_else(|| protocol_error(format!("a binding without =: {line:?}")))?;
-        let oid = ber::parse_oid(name.trim())
+        let oid = asn1::read_dotted(name.trim())
             .ok_or_else(|| protocol_error(format!("a name that is not an OID: {name:?}")))?;
         Ok(Self {
             oid,
