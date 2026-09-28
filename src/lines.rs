@@ -17,7 +17,7 @@ pub fn render_value(value: &Value) -> String {
         Value::Integer(n) => n.to_string(),
         Value::Unsigned(_, n) => n.to_string(),
         Value::Null => String::new(),
-        Value::Oid(arcs) => ber::oid_text(arcs),
+        Value::Oid(arcs) => asn1::dotted(arcs),
         Value::IpAddress(a) => format!("{}.{}.{}.{}", a[0], a[1], a[2], a[3]),
         Value::Exception(0x80) => "noSuchObject".to_string(),
         Value::Exception(0x81) => "noSuchInstance".to_string(),
@@ -46,7 +46,7 @@ pub fn parse_value(text: &str) -> Value {
     {
         return Value::OctetString(bytes);
     }
-    if let Some(arcs) = ber::parse_oid(text).filter(|_| text.contains('.')) {
+    if let Some(arcs) = asn1::read_dotted(text).filter(|_| text.contains('.')) {
         return Value::Oid(arcs);
     }
     Value::OctetString(text.as_bytes().to_vec())

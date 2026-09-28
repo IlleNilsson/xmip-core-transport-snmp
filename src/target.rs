@@ -1,7 +1,12 @@
 //! Where a send is going, read out of the target string.
 
 use crate::pdu::{VERSION_2C, VERSION_3};
+use net::Target;
 use transport::error::{Result, protocol_error};
+
+/// The schemes a target may open with: a trap, `snmp://` or
+/// `snmp+trap://`; an inform; and a set.
+const SCHEMES: &[&str] = &["snmp", "snmp+trap", "snmp+inform", "snmp+set"];
 
 /// What a send does at the far end.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,42 +39,30 @@ impl SnmpTarget {
     /// A scheme that is not SNMP's, a set without an object, an object or
     /// trap-oid that is not dotted numbers, a version that is neither.
     pub fn parse(target: &str) -> Result<Self> {
-        let (kind, rest) = if let Some(rest) = target.strip_prefix("snmp+set://") {
-            ("set", rest)
-        } else if let Some(rest) = target.strip_prefix("snmp+inform://") {
-            ("inform", rest)
-        } else if let Some(rest) = target.strip_prefix("snmp+trap://") {
-            ("trap", rest)
-        } else if let Some(rest) = target.strip_prefix("snmp://") {
-            ("trap", rest)
-        } else if target.contains("://") {
-            return Err(protocol_error(format!("not an snmp target: {target}")));
+        let named = if target.contains("://") {
+            Target::under(SCHEMES, target)
+                .ok_or_else(|| protocol_error(format!("not an snmp target: {target}")))?
         } else {
-            ("trap", target)
+            Target::bare(target)
         };
-        let (rest, query) = rest.split_once('?').unwrap_or((rest, ""));
-        let (address, path) = rest.split_once('/').unwrap_or((rest, ""));
+        let (address, path) = (named.authority(), named.path());
         if address.is_empty() {
             return Err(protocol_error(format!(
                 "an snmp target with no host: {target}"
             )));
         }
-        let action = match kind {
-            "set" => {
-                let oid = crate::ber::parse_oid(path).filter(|arcs| arcs.len() >= 2);
+        let action =
+            if named.is(&["snmp+set"]) {
+                let oid = asn1::read_dotted(path).filter(|arcs| arcs.len() >= 2);
                 Action::Set(oid.ok_or_else(|| {
                     protocol_error(format!("snmp+set needs /<oid> to set: {target}"))
                 })?)
-            }
-            "inform" => Action::Inform,
-            _ => Action::Trap,
-        };
-        let value = |key: &str| {
-            query
-                .split('&')
-                .find_map(|pair| pair.strip_prefix(key)?.strip_prefix('='))
-                .map(ToString::to_string)
-        };
+            } else if named.is(&["snmp+inform"]) {
+                Action::Inform
+            } else {
+                Action::Trap
+            };
+        let value = |key: &str| named.query_value(key);
         let version = match value("version").as_deref() {
             None => None,
             Some("2c" | "2" | "1") => Some(VERSION_2C),
@@ -81,7 +74,7 @@ impl SnmpTarget {
         let trap_oid = match value("trap-oid") {
             None => None,
             Some(text) => Some(
-                crate::ber::parse_oid(&text)
+                asn1::read_dotted(&text)
                     .ok_or_else(|| protocol_error(format!("a trap-oid not dotted: {text}")))?,
             ),
         };

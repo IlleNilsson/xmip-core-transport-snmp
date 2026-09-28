@@ -57,7 +57,7 @@ pub use v3::V3Message;
 /// over IPv4 carries.
 pub const MAX_DATAGRAM: usize = 65_507;
 /// `genErr`, the error status an unwanted request is answered with.
-pub const GEN_ERR: i32 = 5;
+const GEN_ERR: i32 = 5;
 /// What an engine id in its text form opens with (RFC 3411): enterprise 0
 /// with the format bit set, then format 4, text. The text follows.
 pub const TEXT_ENGINE: [u8; 5] = [0x80, 0x00, 0x00, 0x00, 0x04];
@@ -278,7 +278,7 @@ impl SnmpTransport {
 
 fn arrived(peer: SocketAddr, envelope: &Envelope) -> Arrived {
     let pdu = envelope.pdu();
-    let trap_oid = pdu.trap_oid().map(ber::oid_text).unwrap_or_default();
+    let trap_oid = pdu.trap_oid().map(asn1::dotted).unwrap_or_default();
     Arrived::new(
         format!(
             "snmp://{peer}?{}&trap-oid={trap_oid}&pdu={}",

@@ -19,13 +19,13 @@ use transport::error::{Result, protocol_error};
 /// The message is authenticated.
 pub const FLAG_AUTH: u8 = 0x01;
 /// The scoped PDU is encrypted.
-pub const FLAG_PRIV: u8 = 0x02;
+const FLAG_PRIV: u8 = 0x02;
 /// The receiver may answer with a Report.
-pub const FLAG_REPORTABLE: u8 = 0x04;
+const FLAG_REPORTABLE: u8 = 0x04;
 /// The User-based Security Model, `msgSecurityModel` 3.
-pub const SECURITY_USM: i64 = 3;
+const SECURITY_USM: i64 = 3;
 /// `msgMaxSize`: what a datagram carries.
-pub const MAX_SIZE: i64 = 65_507;
+const MAX_SIZE: i64 = 65_507;
 
 /// One SNMP v3 message, noAuthNoPriv.
 #[derive(Clone, Debug, PartialEq, Eq)]

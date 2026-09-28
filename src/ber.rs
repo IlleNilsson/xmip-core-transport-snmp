@@ -4,9 +4,9 @@
 //! PDU wears, the four unsigned application types, `IpAddress` and the three
 //! exceptions a response carries where a value would be. What is here is the
 //! dialect — which tags, and what their contents mean; the framing, the
-//! length forms and the INTEGER and OBJECT IDENTIFIER encodings are the
-//! library's, and the indefinite length form is refused there, as SNMP
-//! requires.
+//! length forms, the INTEGER encodings signed and unsigned, and the OBJECT
+//! IDENTIFIER's, as contents and as dotted text, are the library's, and the
+//! indefinite length form is refused there, as SNMP requires.
 
 use asn1::{
     INTEGER, NULL, OBJECT_IDENTIFIER, OCTET_STRING, SEQUENCE, object_identifier,
@@ -14,11 +14,11 @@ use asn1::{
 };
 use transport::error::{Result, protocol_error};
 
-pub const TAG_IP_ADDRESS: u8 = 0x40;
-pub const TAG_COUNTER32: u8 = 0x41;
-pub const TAG_GAUGE32: u8 = 0x42;
+const TAG_IP_ADDRESS: u8 = 0x40;
+const TAG_COUNTER32: u8 = 0x41;
+const TAG_GAUGE32: u8 = 0x42;
 pub const TAG_TIME_TICKS: u8 = 0x43;
-pub const TAG_COUNTER64: u8 = 0x46;
+const TAG_COUNTER64: u8 = 0x46;
 
 /// One BER value as SNMP uses it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,7 +100,7 @@ pub fn encode(value: &Value, out: &mut Vec<u8>) {
         Value::Oid(arcs) => write_tlv(out, OBJECT_IDENTIFIER, &object_identifier(arcs)),
         Value::Sequence(items) => constructed(out, SEQUENCE, items),
         Value::Context(tag, items) => constructed(out, *tag, items),
-        Value::Unsigned(tag, n) => write_tlv(out, *tag, &unsigned_bytes(*n)),
+        Value::Unsigned(tag, n) => write_tlv(out, *tag, &asn1::unsigned(*n)),
         Value::IpAddress(address) => write_tlv(out, TAG_IP_ADDRESS, address),
         Value::Exception(tag) => write_tlv(out, *tag, &[]),
     }
@@ -120,21 +120,6 @@ fn constructed(out: &mut Vec<u8>, tag: u8, items: &[Value]) {
         encode(item, &mut body);
     }
     write_tlv(out, tag, &body);
-}
-
-/// The fewest bytes, a leading zero where the top bit would read as a sign.
-fn unsigned_bytes(n: u64) -> Vec<u8> {
-    let bytes = n.to_be_bytes();
-    let skip = bytes
-        .iter()
-        .position(|b| *b != 0)
-        .unwrap_or(bytes.len() - 1);
-    let mut out = Vec::with_capacity(9);
-    if bytes[skip] & 0x80 != 0 {
-        out.push(0);
-    }
-    out.extend_from_slice(&bytes[skip..]);
-    out
 }
 
 /// Exactly one value, nothing after it.
@@ -174,7 +159,7 @@ pub fn read(bytes: &[u8], at: usize) -> Result<(Value, usize)> {
             Value::IpAddress(octets)
         }
         TAG_COUNTER32 | TAG_GAUGE32 | TAG_TIME_TICKS | TAG_COUNTER64 => {
-            Value::Unsigned(tag, read_unsigned(body)?)
+            Value::Unsigned(tag, asn1::read_unsigned(body)?)
         }
         0x80..=0x82 => Value::Exception(tag),
         other => {
@@ -186,16 +171,6 @@ pub fn read(bytes: &[u8], at: usize) -> Result<(Value, usize)> {
     Ok((value, end))
 }
 
-fn read_unsigned(body: &[u8]) -> Result<u64> {
-    let digits = body.strip_prefix(&[0]).unwrap_or(body);
-    if digits.len() > 8 {
-        return Err(protocol_error("an unsigned over eight bytes"));
-    }
-    Ok(digits
-        .iter()
-        .fold(0u64, |acc, digit| (acc << 8) | u64::from(*digit)))
-}
-
 fn read_items(body: &[u8]) -> Result<Vec<Value>> {
     let mut items = Vec::new();
     let mut at = 0;
@@ -205,22 +180,6 @@ fn read_items(body: &[u8]) -> Result<Vec<Value>> {
         at = next;
     }
     Ok(items)
-}
-
-/// `1.3.6.1.2.1.1.3.0`.
-#[must_use]
-pub fn oid_text(arcs: &[u32]) -> String {
-    arcs.iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(".")
-}
-
-/// The arcs of `1.3.6.1.2.1.1.3.0`, `None` where any part is not a number.
-#[must_use]
-pub fn parse_oid(text: &str) -> Option<Vec<u32>> {
-    let text = text.strip_prefix('.').unwrap_or(text);
-    text.split('.').map(|arc| arc.parse().ok()).collect()
 }
 
 #[cfg(test)]
@@ -267,9 +226,6 @@ mod tests {
                 ])]),
             ],
         ));
-        assert_eq!(oid_text(&[1, 3, 6]), "1.3.6");
-        assert_eq!(parse_oid(".1.3.6"), Some(vec![1, 3, 6]));
-        assert_eq!(parse_oid("1.x"), None);
     }
 
     #[test]
