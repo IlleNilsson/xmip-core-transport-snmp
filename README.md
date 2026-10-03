@@ -10,6 +10,19 @@ A Receive Location keeps its socket, bound on the first receive (`transport::kep
 
 A send target is read by `net::Target` in [xmip-core-library-net](https://github.com/IlleNilsson/xmip-core-library-net), the one reading of a URI every technology calls, and its query is decoded there. Until 2026-09-28 this technology split the query off itself, without percent-decoding it.
 
+## Acknowledgement
+
+An inform is confirmed, so its Response waits for the whole receive cycle: on
+Accepted the Response goes back with `noError`. On Refused it goes back with an
+error status (RFC 3416 section 3): `authorizationError` for a sender not
+identified or not permitted, `genErr` for content refused; a Response ends the
+originator's retransmissions (RFC 3416 section 4.2.7), so it is not sent again,
+and a send of this transport answered an error status fails as permanent. On
+Failed the inform goes unanswered, and its originator sends it again when its
+timeout passes (RFC 3413 3.3.6). A trap is
+unconfirmed (its agent sends it once and waits for nothing), so acceptance is
+at-most-once there. Each notification arrives whole.
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it

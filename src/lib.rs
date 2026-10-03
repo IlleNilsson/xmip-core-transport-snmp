@@ -13,6 +13,20 @@
 //! authentication and privacy of RFC 3414 stay open (`v3.rs` says why), and
 //! join with identity (ADR-0019).
 //!
+//! **How a receive acknowledges.** An inform is confirmed: its Response
+//! waits for the whole receive cycle and goes on
+//! [`transport::Verdict::Accepted`] with error status `noError`. On
+//! [`transport::Verdict::Refused`] the Response goes with an error status
+//! (RFC 3416 section 3) — `authorizationError` for a sender not identified
+//! or not permitted, `genErr` for content refused — and a Response, any
+//! Response, ends the originator's retransmissions (RFC 3416 section
+//! 4.2.7, RFC 3413 3.3.6), so it is not sent again. On
+//! [`transport::Verdict::Failed`] the inform goes unanswered, and its
+//! originator sends it again when its timeout passes. A trap is
+//! unconfirmed — its agent sends it once and waits for nothing — so
+//! acceptance is at-most-once there ([`AT_MOST_ONCE`]). Each notification
+//! arrives whole.
+//!
 //! The origin URI carries what the message header knew:
 //! `snmp://peer?community=public&version=2c&trap-oid=1.3.6.1.4.1.9.0.1&pdu=trap`,
 //! or `user=ops&version=3` for v3.
@@ -46,18 +60,27 @@ use std::time::{Duration, Instant};
 pub use ber::Value;
 pub use pdu::{Binding, Message, Pdu, PduType};
 pub use target::{Action, SnmpTarget};
+use transport::answer::Datagram;
 use transport::error::{Result, classify, protocol_error};
 use transport::kept::Kept;
 use transport::sender::Sender;
 use transport::socket;
-use transport::{Arrived, Directions, Transport};
+use transport::{Acknowledgement, Arrived, Directions, Refusal, Transport, Verdict};
 pub use v3::V3Message;
+
+/// Why a trap cannot be acknowledged after the receive cycle.
+pub const AT_MOST_ONCE: &str = "an SNMP trap is unconfirmed: its agent sends it once and waits \
+                                for nothing";
 
 /// The largest datagram an SNMP entity must take, and then some: what UDP
 /// over IPv4 carries.
 pub const MAX_DATAGRAM: usize = 65_507;
-/// `genErr`, the error status an unwanted request is answered with.
+/// `genErr`, the error status an unwanted request, and an inform whose
+/// content was refused, is answered with (RFC 3416 section 3).
 const GEN_ERR: i32 = 5;
+/// `authorizationError`, the error status an inform from a sender not
+/// identified or not permitted is answered with (RFC 3416 section 3).
+const AUTHORIZATION_ERROR: i32 = 16;
 /// What an engine id in its text form opens with (RFC 3411): enterprise 0
 /// with the format bit set, then format 4, text. The text follows.
 pub const TEXT_ENGINE: [u8; 5] = [0x80, 0x00, 0x00, 0x00, 0x04];
@@ -190,12 +213,13 @@ impl SnmpTransport {
         socket::bind_udp(&self.bind, self.timeout)
     }
 
-    /// Take one trap or inform from an already-bound socket. An inform is
-    /// acknowledged; a get or set aimed at this manager is answered `genErr`
-    /// and skipped, and a stray response is skipped.
+    /// Take one trap or inform from an already-bound socket. An inform's
+    /// Response waits for the verdict; a get or set aimed at this manager is
+    /// answered `genErr` and skipped, and a stray response is skipped.
     ///
     /// # Errors
-    /// Where nothing arrived in time, or what arrived is not SNMP.
+    /// Where nothing arrived in time, what arrived is not SNMP, or the
+    /// socket could not be shared with an inform's Response.
     pub fn receive_datagram(&self, socket: &UdpSocket) -> Result<Arrived> {
         let mut buffer = vec![0u8; MAX_DATAGRAM];
         loop {
@@ -205,13 +229,28 @@ impl SnmpTransport {
             let envelope = Envelope::decode(&buffer[..read])?;
             let pdu = envelope.pdu();
             match pdu.kind {
-                PduType::Trap => return Ok(arrived(peer, &envelope)),
+                PduType::Trap => {
+                    let acknowledgement = Acknowledgement::at_most_once(AT_MOST_ONCE);
+                    return Ok(arrived(peer, &envelope, acknowledgement));
+                }
                 PduType::InformRequest => {
-                    let answer = envelope.answering(pdu.response(0)).encode();
-                    socket
-                        .send_to(&answer, peer)
-                        .map_err(|e| classify("acknowledging an inform", &e))?;
-                    return Ok(arrived(peer, &envelope));
+                    let answering = Datagram::to(socket, peer)?;
+                    let answered = envelope.clone();
+                    let acknowledgement = Acknowledgement::deferred(move |verdict| {
+                        let status = match verdict {
+                            Verdict::Accepted => 0,
+                            Verdict::Refused(Refusal::Unidentified | Refusal::Forbidden) => {
+                                AUTHORIZATION_ERROR
+                            }
+                            Verdict::Refused(Refusal::Unacceptable) => GEN_ERR,
+                            // Failed, the inform goes unanswered, and its
+                            // originator sends it again (RFC 3413 3.3.6).
+                            Verdict::Failed => return Ok(()),
+                        };
+                        let response = answered.pdu().response(status);
+                        answering.send(&answered.answering(response).encode())
+                    });
+                    return Ok(arrived(peer, &envelope, acknowledgement));
                 }
                 PduType::GetResponse => {}
                 _ => {
@@ -276,16 +315,18 @@ impl SnmpTransport {
     }
 }
 
-fn arrived(peer: SocketAddr, envelope: &Envelope) -> Arrived {
+/// One notification, whole, told its verdict by `acknowledgement`.
+fn arrived(peer: SocketAddr, envelope: &Envelope, acknowledgement: Acknowledgement) -> Arrived {
     let pdu = envelope.pdu();
     let trap_oid = pdu.trap_oid().map(asn1::dotted).unwrap_or_default();
-    Arrived::new(
+    Arrived::whole(
         format!(
             "snmp://{peer}?{}&trap-oid={trap_oid}&pdu={}",
             envelope.credential(),
             pdu.kind.name()
         ),
         lines::render(&pdu.bindings),
+        acknowledgement,
     )
 }
 
@@ -298,8 +339,14 @@ impl Transport for SnmpTransport {
         Directions::BOTH
     }
 
+    fn arrivals(&self) -> transport::Arrivals {
+        transport::Arrivals::Unordered("each notification is its own, answered to its own sender")
+    }
+
     /// One trap or inform, from the socket the first receive bound and
-    /// kept: what arrived between two receives waits in its buffer.
+    /// kept: what arrived between two receives waits in its buffer. An
+    /// inform's Response goes on accepted, and none on refused; a trap is
+    /// at-most-once ([`AT_MOST_ONCE`]).
     fn receive(&self) -> Result<Vec<Arrived>> {
         let socket = self.receiving.bound(|| self.bind_udp())?;
         Ok(vec![self.receive_datagram(socket)?])
@@ -408,8 +455,10 @@ mod tests {
             agent.send(address, binding.as_bytes()).expect("trapped");
         }
         for round in 0..5 {
-            let arrived = far_end.receive().expect("received");
-            let text = String::from_utf8(arrived[0].bytes.clone()).expect("text");
+            let mut arrived = far_end.receive().expect("received");
+            let arrived = arrived.remove(0);
+            assert!(!arrived.defers(), "a trap is at-most-once");
+            let text = String::from_utf8(arrived.taken().expect("taken").bytes).expect("text");
             assert!(text.ends_with(&format!("=round {round}\n")), "{text}");
         }
     }
@@ -432,7 +481,7 @@ mod tests {
             "{}",
             arrived.origin_uri
         );
-        let text = String::from_utf8(arrived.bytes).expect("text");
+        let text = String::from_utf8(arrived.taken().expect("taken").bytes).expect("text");
         assert!(text.starts_with("1.3.6.1.2.1.1.3.0="), "{text}");
         assert!(text.ends_with(
             "1.3.6.1.6.3.1.1.4.1.0=1.3.6.1.4.1.9.0.1\n\
@@ -459,11 +508,14 @@ mod tests {
             )
         });
         let v2c = far_end.receive_datagram(&socket).expect("v2c inform");
+        assert!(v2c.defers(), "an inform waits for its Response");
         assert!(
             v2c.origin_uri
                 .contains("community=public&version=2c&trap-oid=0.0&pdu=inform")
         );
+        v2c.taken().expect("acknowledged");
         let v3 = far_end.receive_datagram(&socket).expect("v3 inform");
+        let v3 = v3.taken().expect("acknowledged");
         assert!(
             v3.origin_uri
                 .contains("user=ops&version=3&trap-oid=0.0&pdu=inform")
@@ -505,6 +557,38 @@ mod tests {
         let refused = setter.join().expect("thread").expect_err("wrongValue");
         assert!(refused.message.contains("error status 17"));
         assert!(!refused.retryable);
+    }
+
+    #[test]
+    fn an_inform_is_answered_an_error_when_refused_nothing_when_failed_and_acknowledged() {
+        let far_end = node();
+        let (socket, address) = far_end.bind_udp().expect("binding");
+        let informer = std::thread::spawn(move || {
+            let near = node().timing_out_after(Duration::from_millis(200));
+            let target = format!("snmp+inform://{address}");
+            [0; 4].map(|_| near.send(&target, b"1.3.6.1.4.1.1.0=1\n"))
+        });
+        let forbidden = far_end.receive_datagram(&socket).expect("the first");
+        forbidden.refused(Refusal::Forbidden).expect("answered");
+        let unacceptable = far_end.receive_datagram(&socket).expect("the second");
+        unacceptable
+            .refused(Refusal::Unacceptable)
+            .expect("answered");
+        let failed = far_end.receive_datagram(&socket).expect("the third");
+        failed.failed().expect("unanswered");
+        let accepted = far_end.receive_datagram(&socket).expect("sent again");
+        let taken = accepted.taken().expect("acknowledged");
+        assert!(taken.bytes.ends_with(b"1.3.6.1.4.1.1.0=1\n"));
+        let [forbidden, unacceptable, failed, accepted] = informer.join().expect("thread");
+        for (refused, status) in [(forbidden, "status 16"), (unacceptable, "status 5")] {
+            let error = refused.expect_err("an error status");
+            assert!(
+                !error.retryable && error.message.contains(status),
+                "{error}"
+            );
+        }
+        assert!(failed.expect_err("no Response").retryable);
+        accepted.expect("acknowledged");
     }
 
     #[test]

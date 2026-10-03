@@ -18,7 +18,7 @@ use net::ceiling;
 use transport::bound::Bound;
 use transport::error::{Result, classify, protocol_error};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
-use transport::{Arrived, Transport};
+use transport::{Taken, Transport};
 
 use crate::{Binding, Envelope, MAX_DATAGRAM, Message, Pdu, PduType, SnmpTransport, Value};
 
@@ -55,7 +55,7 @@ impl SnmpTransport {
 }
 
 /// A bound agent's one SET, answered, and what it set.
-fn agent(socket: &UdpSocket) -> Result<Arrived> {
+fn agent(socket: &UdpSocket) -> Result<Taken> {
     let mut buffer = vec![0u8; MAX_DATAGRAM];
     let (read, peer) = socket
         .recv_from(&mut buffer)
@@ -82,7 +82,7 @@ fn agent(socket: &UdpSocket) -> Result<Arrived> {
         asn1::dotted(&binding.oid),
         pdu.kind.name()
     );
-    Ok(Arrived::new(origin, bytes))
+    Ok(Taken::new(origin, bytes))
 }
 
 impl Loopback for SnmpTransport {
