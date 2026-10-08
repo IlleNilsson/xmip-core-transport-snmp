@@ -328,6 +328,7 @@ fn arrived(peer: SocketAddr, envelope: &Envelope, acknowledgement: Acknowledgeme
         lines::render(&pdu.bindings),
         acknowledgement,
     )
+    .from_peer(peer)
 }
 
 impl Transport for SnmpTransport {

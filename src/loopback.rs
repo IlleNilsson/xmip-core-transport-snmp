@@ -15,6 +15,7 @@ use std::net::UdpSocket;
 use std::sync::OnceLock;
 
 use net::ceiling;
+use transport::ArrivalIdentity;
 use transport::bound::Bound;
 use transport::error::{Result, classify, protocol_error};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
@@ -82,10 +83,14 @@ fn agent(socket: &UdpSocket) -> Result<Taken> {
         asn1::dotted(&binding.oid),
         pdu.kind.name()
     );
-    Ok(Taken::new(origin, bytes))
+    Ok(Taken::new(origin, bytes).from_peer(peer))
 }
 
 impl Loopback for SnmpTransport {
+    fn arrival_identity(&self) -> ArrivalIdentity {
+        ArrivalIdentity::PEER
+    }
+
     fn ceiling(&self) -> Option<usize> {
         Some(ceiling())
     }
