@@ -344,6 +344,10 @@ impl Transport for SnmpTransport {
         transport::Arrivals::Unordered("each notification is its own, answered to its own sender")
     }
 
+    fn waiting(&self) -> transport::Waiting {
+        transport::Waiting::Waits("a read of the socket waits for a notification")
+    }
+
     /// One trap or inform, from the socket the first receive bound and
     /// kept: what arrived between two receives waits in its buffer. An
     /// inform's Response goes on accepted, and none on refused; a trap is
