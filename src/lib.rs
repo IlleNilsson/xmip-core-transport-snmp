@@ -352,12 +352,17 @@ impl Transport for SnmpTransport {
     /// kept: what arrived between two receives waits in its buffer. An
     /// inform's Response goes on accepted, and none on refused; a trap is
     /// at-most-once ([`AT_MOST_ONCE`]).
-    fn receive(&self) -> Result<Vec<Arrived>> {
+    fn receive_up_to(&self, _most: usize) -> Result<Vec<Arrived>> {
         let socket = self.receiving.bound(|| self.bind_udp())?;
         Ok(vec![self.receive_datagram(socket)?])
     }
 
-    fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
+    fn sending(&self) -> transport::Sending {
+        transport::Sending::Gathered("one SNMP datagram carries the whole body")
+    }
+
+    fn send_from(&self, target: &str, outgoing: transport::Outgoing<'_>) -> Result<()> {
+        let bytes: &[u8] = &outgoing.gather()?;
         let target = SnmpTarget::parse(target)?;
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let trap_oid = target
