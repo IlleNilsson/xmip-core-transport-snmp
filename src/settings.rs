@@ -40,6 +40,9 @@ impl Configured for SnmpTransport {
         ],
     };
 
+    /// The schemes a Location's address is entered with to choose this technology.
+    const SCHEMES: &'static [&'static str] = crate::target::SCHEMES;
+
     /// The community is a shared secret and comes through the Location's
     /// credentials, not a setting; until it is given, a v2c send names none.
     fn configured(address: &str, settings: &Read) -> Result<Self> {
