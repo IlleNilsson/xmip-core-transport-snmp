@@ -12,7 +12,7 @@
 //! over it is refused before anything waits on it.
 
 use std::net::UdpSocket;
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 
 use net::ceiling;
 use transport::ArrivalIdentity;
@@ -35,14 +35,14 @@ const COMMUNITY: &str = "private";
 /// fresh transport starts at.
 #[must_use]
 pub fn ceiling() -> usize {
-    static CEILING: OnceLock<usize> = OnceLock::new();
-    *CEILING.get_or_init(|| {
+    static CEILING: LazyLock<usize> = LazyLock::new(|| {
         let probe = 300;
         let binding = Binding::new(&OID, Value::OctetString(vec![0; probe]));
         let set = Pdu::new(PduType::SetRequest, 1, vec![binding]);
         let wire = Envelope::V2c(Message::v2c(COMMUNITY, set)).encode();
         MAX_DATAGRAM - (wire.len() - probe)
-    })
+    });
+    *CEILING
 }
 
 impl SnmpTransport {
