@@ -138,20 +138,29 @@ pub fn decode(bytes: &[u8]) -> Result<Value> {
 ///
 /// # Errors
 /// A tag this file does not know, a length that runs past the end or is
-/// indefinite, an INTEGER over eight bytes, an arc over what `u32` holds.
+/// indefinite, an INTEGER over eight bytes, an arc over what `u32` holds,
+/// or constructed values nested past `codec::depth`'s cap.
 pub fn read(bytes: &[u8], at: usize) -> Result<(Value, usize)> {
+    read_at(bytes, at, 0)
+}
+
+/// [`read`] `depth` constructed values down: a SEQUENCE or a PDU goes one
+/// deeper, so a datagram of nested SEQUENCEs is refused at the cap rather
+/// than read down the stack.
+fn read_at(bytes: &[u8], at: usize, depth: usize) -> Result<(Value, usize)> {
+    codec::depth::within(depth, "a BER element").map_err(|deep| protocol_error(deep.message))?;
     let element = bytes
         .get(at..)
         .ok_or_else(|| protocol_error("a value shorter than its length"))?;
-    let (tag, body, rest) = asn1::read(element)?;
+    let (tag, body, rest) = asn1::ber::read(element)?;
     let end = bytes.len() - rest.len();
     let value = match tag {
         INTEGER => Value::Integer(asn1::read_integer(body)?),
         OCTET_STRING => Value::OctetString(body.to_vec()),
         NULL => Value::Null,
         OBJECT_IDENTIFIER => Value::Oid(read_object_identifier(body)?),
-        SEQUENCE => Value::Sequence(read_items(body)?),
-        0xA0..=0xAF => Value::Context(tag, read_items(body)?),
+        SEQUENCE => Value::Sequence(read_items(body, depth + 1)?),
+        0xA0..=0xAF => Value::Context(tag, read_items(body, depth + 1)?),
         TAG_IP_ADDRESS => {
             let octets: [u8; 4] = body
                 .try_into()
@@ -171,11 +180,11 @@ pub fn read(bytes: &[u8], at: usize) -> Result<(Value, usize)> {
     Ok((value, end))
 }
 
-fn read_items(body: &[u8]) -> Result<Vec<Value>> {
+fn read_items(body: &[u8], depth: usize) -> Result<Vec<Value>> {
     let mut items = Vec::new();
     let mut at = 0;
     while at < body.len() {
-        let (item, next) = read(body, at)?;
+        let (item, next) = read_at(body, at, depth)?;
         items.push(item);
         at = next;
     }
@@ -245,5 +254,27 @@ mod tests {
         assert!(Value::Null.octets().is_err());
         assert!(Value::Null.oid().is_err());
         assert!(Value::Null.items().is_err());
+    }
+
+    #[test]
+    fn a_datagram_of_nested_sequences_is_refused_at_the_cap() {
+        let mut hostile = Vec::new();
+        for _ in 0..5_000 {
+            hostile = asn1::tlv(SEQUENCE, &hostile);
+        }
+        let error = decode(&hostile).expect_err("deep");
+        assert!(
+            error.message.contains("nests past the 64 levels"),
+            "{error:?}"
+        );
+        let mut honest = vec![Value::Null];
+        for _ in 0..64 {
+            honest = vec![Value::Sequence(honest)];
+        }
+        round_trip(&honest[0]);
+        assert_eq!(
+            decode(&[0x04, 0x84, 0, 0, 0, 1, b'x']).expect("a BER length"),
+            Value::OctetString(b"x".to_vec())
+        );
     }
 }
