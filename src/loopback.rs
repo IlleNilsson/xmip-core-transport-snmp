@@ -19,7 +19,7 @@ use transport::ArrivalIdentity;
 use transport::bound::Bound;
 use transport::error::{Result, classify, protocol_error};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
-use transport::{Taken, Transport};
+use transport::{Configured, Taken, Transport};
 
 use crate::{Binding, Envelope, MAX_DATAGRAM, Message, Pdu, PduType, SnmpTransport, Value};
 

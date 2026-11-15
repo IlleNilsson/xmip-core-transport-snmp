@@ -29,19 +29,21 @@ impl Configured for SnmpTransport {
                           under enterprise 0; `xmip` when left out.",
                 applies: Applies::Send,
             },
-            Setting {
-                name: "timeout",
-                kind: Kind::Duration,
-                presence: Presence::Optional,
-                meaning: "How long a receive waits for a notification and a send for its \
-                          answer; unbounded when left out.",
-                applies: Applies::Both,
-            },
+            transport::configured::timeout(
+                Applies::Both,
+                None,
+                "How long a receive waits for a notification and a send for its \
+                 answer; unbounded when left out.",
+            ),
         ],
     };
 
     /// The schemes a Location's address is entered with to choose this technology.
     const SCHEMES: &'static [&'static str] = crate::target::SCHEMES;
+
+    fn timeout_kept(&mut self) -> Option<&mut dyn transport::configured::TimeoutKept> {
+        Some(&mut self.timeout)
+    }
 
     /// The community is a shared secret and comes through the Location's
     /// credentials, not a setting; until it is given, a v2c send names none.
@@ -52,9 +54,6 @@ impl Configured for SnmpTransport {
         }
         if let Some(engine) = settings.optional_text("engine") {
             transport = transport.as_engine(&[&TEXT_ENGINE[..], engine.as_bytes()].concat());
-        }
-        if let Some(timeout) = settings.optional_duration("timeout") {
-            transport = transport.timing_out_after(timeout);
         }
         Ok(transport)
     }

@@ -198,13 +198,6 @@ impl SnmpTransport {
         self
     }
 
-    /// Give up waiting for a message or an answer after `timeout`.
-    #[must_use]
-    pub const fn timing_out_after(mut self, timeout: Duration) -> Self {
-        self.timeout = Some(timeout);
-        self
-    }
-
     /// Bind the UDP socket and report the address actually assigned.
     ///
     /// # Errors
@@ -398,6 +391,7 @@ impl Transport for SnmpTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use transport::Configured;
     use transport::loopback::Loopback;
     use transport::payload::{edge_payloads, patterned};
 
