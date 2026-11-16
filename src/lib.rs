@@ -159,7 +159,7 @@ pub struct SnmpTransport {
     next_id: AtomicI32,
     /// The socket every message leaves from, bound once.
     sender: Sender,
-    /// The socket the first receive binds, and every receive reads.
+    /// The socket its open binds, and every receive reads.
     receiving: Kept<UdpSocket>,
 }
 
@@ -341,12 +341,12 @@ impl Transport for SnmpTransport {
         transport::Waiting::Waits("a read of the socket waits for a notification")
     }
 
-    /// One trap or inform, from the socket the first receive bound and
+    /// One trap or inform, from the socket its open bound and
     /// kept: what arrived between two receives waits in its buffer. An
     /// inform's Response goes on accepted, and none on refused; a trap is
     /// at-most-once ([`AT_MOST_ONCE`]).
     fn receive_up_to(&self, _most: usize) -> Result<Vec<Arrived>> {
-        let socket = self.receiving.bound(|| self.bind_udp())?;
+        let socket = self.receiving.listener()?;
         Ok(vec![self.receive_datagram(socket)?])
     }
 

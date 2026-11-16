@@ -57,6 +57,12 @@ impl Configured for SnmpTransport {
         }
         Ok(transport)
     }
+
+    /// The socket every receive takes from, bound where a Receive Location
+    /// listens for notifications.
+    fn listening(&self) -> Result<Option<&str>> {
+        self.receiving.listening(|| self.bind_udp())
+    }
 }
 
 #[cfg(test)]
