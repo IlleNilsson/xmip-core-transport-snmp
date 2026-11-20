@@ -311,7 +311,7 @@ impl SnmpTransport {
 /// One notification, whole, told its verdict by `acknowledgement`.
 fn arrived(peer: SocketAddr, envelope: &Envelope, acknowledgement: Acknowledgement) -> Arrived {
     let pdu = envelope.pdu();
-    let trap_oid = pdu.trap_oid().map(asn1::dotted).unwrap_or_default();
+    let trap_oid = pdu.trap_oid().map_or_default(asn1::dotted);
     Arrived::whole(
         format!(
             "snmp://{peer}?{}&trap-oid={trap_oid}&pdu={}",
