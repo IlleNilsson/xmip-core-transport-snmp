@@ -41,6 +41,14 @@ impl Configured for SnmpTransport {
     /// The schemes a Location's address is entered with to choose this technology.
     const SCHEMES: &'static [&'static str] = crate::target::SCHEMES;
 
+    /// The whole address: its scheme says what a send does at the far end,
+    /// a trap, an inform or a set (`target::SnmpTarget`), so a Send
+    /// Location's sends do what its address says; a Receive Location binds
+    /// the address in its own terms.
+    fn own_target(address: &str) -> &str {
+        address
+    }
+
     fn timeout_kept(&mut self) -> Option<&mut dyn transport::configured::TimeoutKept> {
         Some(&mut self.timeout)
     }
@@ -90,5 +98,28 @@ mod tests {
             panic!("a Receive Location speaks as no user");
         };
         assert!(refused.message.contains("\"user\""), "{refused}");
+    }
+
+    /// A Send Location as a node builds it, from its address, does what its
+    /// address says at the far end: its own target is the whole address, so
+    /// `snmp+set://` sets the object it names (the owner, 2026-11-24: *go
+    /// through each item and sort it*). Until 2026-11-24 its target was the
+    /// address without its scheme, a bare `host:port`, read as a trap.
+    #[test]
+    fn a_send_location_does_what_its_address_says() {
+        use transport::{Loopback, Transport};
+        let far = SnmpTransport::loopback().far_end().expect("a far end");
+        let object: Vec<String> = crate::loopback::OID.iter().map(u32::to_string).collect();
+        let address = format!("snmp+set://{}/{}", far.address(), object.join("."));
+        let sending = SnmpTransport::open(&address, Applies::Send, &[])
+            .expect("sending")
+            .timing_out_after(transport::LOOPBACK_TIMEOUT);
+        let taking = std::thread::spawn(move || far.take_one());
+
+        let sent = sending.send(SnmpTransport::own_target(&address), b"order");
+
+        let taken = taking.join().expect("the far end");
+        sent.expect("set as its address says");
+        assert_eq!(taken.expect("taken").bytes, b"order");
     }
 }
