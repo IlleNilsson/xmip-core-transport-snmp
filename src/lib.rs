@@ -44,110 +44,79 @@
 //! SET carries its bytes as they are. Bytes that are not UTF-8, or a line
 //! that is not a binding, are refused with the reason, never guessed at; an
 //! OCTET STRING that is not text is written as `0x` hex.
+//!
+//! **Built with its `declaration` feature alone** the crate is
+//! [`declaration`], what a Location of it is configured with, and none of
+//! the code above, which is behind the default feature: what the surfaces'
+//! library carries (ADR-0064, amendment 2026-11-26).
 
+#[cfg(feature = "default")]
 pub mod ber;
+#[cfg(feature = "declaration")]
+pub mod declaration;
+#[cfg(feature = "default")]
+mod envelope;
+#[cfg(feature = "default")]
 pub mod lines;
+#[cfg(feature = "default")]
 pub mod loopback;
+#[cfg(feature = "default")]
 pub mod pdu;
+#[cfg(feature = "default")]
 mod settings;
+#[cfg(feature = "default")]
 pub mod target;
+#[cfg(feature = "default")]
 pub mod v3;
 
-use std::net::{SocketAddr, UdpSocket};
-use std::sync::atomic::{AtomicI32, Ordering};
-use std::time::{Duration, Instant};
+#[cfg(feature = "default")]
+use std::{
+    net::{SocketAddr, UdpSocket},
+    sync::atomic::{AtomicI32, Ordering},
+    time::{Duration, Instant},
+};
 
+#[cfg(feature = "default")]
 pub use ber::Value;
+#[cfg(feature = "default")]
+pub use envelope::Envelope;
+#[cfg(feature = "default")]
 pub use pdu::{Binding, Message, Pdu, PduType};
+#[cfg(feature = "default")]
 pub use target::{Action, SnmpTarget};
-use transport::answer::Datagram;
+#[cfg(feature = "default")]
 use transport::error::{Result, classify, protocol_error};
-use transport::kept::Kept;
-use transport::sender::Sender;
-use transport::socket;
-use transport::{Acknowledgement, Arrived, Directions, Refusal, Transport, Verdict};
+#[cfg(feature = "default")]
+use transport::{
+    Acknowledgement, Arrived, Directions, Refusal, Transport, Verdict, answer::Datagram,
+    kept::Kept, sender::Sender, socket,
+};
+#[cfg(feature = "default")]
 pub use v3::V3Message;
 
 /// Why a trap cannot be acknowledged after the receive cycle.
+#[cfg(feature = "default")]
 pub const AT_MOST_ONCE: &str = "an SNMP trap is unconfirmed: its agent sends it once and waits \
                                 for nothing";
 
 /// The largest datagram an SNMP entity must take, and then some: what UDP
 /// over IPv4 carries.
+#[cfg(feature = "default")]
 pub const MAX_DATAGRAM: usize = 65_507;
 /// `genErr`, the error status an unwanted request, and an inform whose
 /// content was refused, is answered with (RFC 3416 section 3).
+#[cfg(feature = "default")]
 const GEN_ERR: i32 = 5;
 /// `authorizationError`, the error status an inform from a sender not
 /// identified or not permitted is answered with (RFC 3416 section 3).
+#[cfg(feature = "default")]
 const AUTHORIZATION_ERROR: i32 = 16;
 /// What an engine id in its text form opens with (RFC 3411): enterprise 0
 /// with the format bit set, then format 4, text. The text follows.
+#[cfg(feature = "default")]
 pub const TEXT_ENGINE: [u8; 5] = [0x80, 0x00, 0x00, 0x00, 0x04];
 
-/// A message as it came, whichever version wrapped it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Envelope {
-    V2c(Message),
-    V3(V3Message),
-}
-
-impl Envelope {
-    /// Read `bytes` by the version they open with.
-    ///
-    /// # Errors
-    /// Not BER, not a version spoken, or anything `pdu` and `v3` refuse.
-    pub fn decode(bytes: &[u8]) -> Result<Self> {
-        if pdu::version_of(bytes)? == pdu::VERSION_3 {
-            v3::decode(bytes).map(Self::V3)
-        } else {
-            pdu::decode(bytes).map(Self::V2c)
-        }
-    }
-
-    /// On the wire.
-    #[must_use]
-    pub fn encode(&self) -> Vec<u8> {
-        match self {
-            Self::V2c(message) => pdu::encode(message),
-            Self::V3(message) => v3::encode(message),
-        }
-    }
-
-    #[must_use]
-    pub const fn pdu(&self) -> &Pdu {
-        match self {
-            Self::V2c(message) => &message.pdu,
-            Self::V3(message) => &message.pdu,
-        }
-    }
-
-    /// The same wrapping around `pdu`, answering this message.
-    #[must_use]
-    pub fn answering(&self, pdu: Pdu) -> Self {
-        match self {
-            Self::V2c(message) => Self::V2c(Message {
-                version: message.version,
-                community: message.community.clone(),
-                pdu,
-            }),
-            Self::V3(message) => Self::V3(message.answering(pdu)),
-        }
-    }
-
-    /// `community=public&version=2c` or `user=ops&version=3`.
-    #[must_use]
-    pub fn credential(&self) -> String {
-        match self {
-            Self::V2c(message) => format!(
-                "community={}&version=2c",
-                String::from_utf8_lossy(&message.community)
-            ),
-            Self::V3(message) => format!("user={}&version=3", message.user),
-        }
-    }
-}
-
+#[cfg(feature = "default")]
 pub struct SnmpTransport {
     bind: String,
     community: String,
@@ -163,6 +132,7 @@ pub struct SnmpTransport {
     receiving: Kept<UdpSocket>,
 }
 
+#[cfg(feature = "default")]
 impl SnmpTransport {
     /// Listen at `bind`, `0.0.0.0:162` being the standard port; send v2c
     /// under `community`.
@@ -309,6 +279,7 @@ impl SnmpTransport {
 }
 
 /// One notification, whole, told its verdict by `acknowledgement`.
+#[cfg(feature = "default")]
 fn arrived(peer: SocketAddr, envelope: &Envelope, acknowledgement: Acknowledgement) -> Arrived {
     let pdu = envelope.pdu();
     let trap_oid = pdu.trap_oid().map_or_default(asn1::dotted);
@@ -324,6 +295,7 @@ fn arrived(peer: SocketAddr, envelope: &Envelope, acknowledgement: Acknowledgeme
     .from_peer(peer)
 }
 
+#[cfg(feature = "default")]
 impl Transport for SnmpTransport {
     fn name(&self) -> &'static str {
         "snmp"

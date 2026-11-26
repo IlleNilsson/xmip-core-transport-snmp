@@ -1,12 +1,9 @@
 //! Where a send is going, read out of the target string.
 
+use crate::declaration::SCHEMES;
 use crate::pdu::{VERSION_2C, VERSION_3};
 use net::Target;
 use transport::error::{Result, protocol_error};
-
-/// The schemes a target may open with: a trap, `snmp://` or
-/// `snmp+trap://`; an inform; and a set.
-pub(crate) const SCHEMES: &[&str] = &["snmp", "snmp+trap", "snmp+inform", "snmp+set"];
 
 /// What a send does at the far end.
 #[derive(Clone, Debug, PartialEq, Eq)]

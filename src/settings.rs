@@ -1,45 +1,15 @@
-//! The settings an SNMP Location takes, declared once and read through
-//! (ADR-0064, amendment 2026-09-26).
+//! The settings an SNMP Location takes, read through its declaration
+//! (`crate::declaration`; ADR-0064, amendments 2026-09-26 and 2026-11-26).
 
 use transport::Configured;
 use transport::error::Result;
-use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
+use xcore::settings::{Read, Settings};
 
-use crate::{SnmpTransport, TEXT_ENGINE};
+use crate::{SnmpTransport, TEXT_ENGINE, declaration};
 
 impl Configured for SnmpTransport {
-    /// The address is where a Receive Location listens as the manager,
-    /// `0.0.0.0:162`; a send's target is each send's own.
-    const SETTINGS: &'static Settings = &Settings {
-        technology: env!("CARGO_PKG_NAME"),
-        settings: &[
-            Setting {
-                name: "user",
-                kind: Kind::Text,
-                presence: Presence::Optional,
-                meaning: "The user a Send Location speaks v3 as, at noAuthNoPriv, unless a \
-                          target says otherwise; v2c when left out.",
-                applies: Applies::Send,
-            },
-            Setting {
-                name: "engine",
-                kind: Kind::Text,
-                presence: Presence::Optional,
-                meaning: "The text an engine id v3 messages name carries, in its text form \
-                          under enterprise 0; `xmip` when left out.",
-                applies: Applies::Send,
-            },
-            transport::configured::timeout(
-                Applies::Both,
-                None,
-                "How long a receive waits for a notification and a send for its \
-                 answer; unbounded when left out.",
-            ),
-        ],
-    };
-
-    /// The schemes a Location's address is entered with to choose this technology.
-    const SCHEMES: &'static [&'static str] = crate::target::SCHEMES;
+    const SETTINGS: &'static Settings = declaration::SETTINGS;
+    const SCHEMES: &'static [&'static str] = declaration::SCHEMES;
 
     /// The whole address: its scheme says what a send does at the far end,
     /// a trap, an inform or a set (`target::SnmpTarget`), so a Send
@@ -77,7 +47,7 @@ impl Configured for SnmpTransport {
 mod tests {
     use super::*;
     use std::time::Duration;
-    use xcore::settings::Given;
+    use xcore::settings::{Applies, Given};
 
     #[test]
     fn snmp_declares_its_settings_and_reads_through_them() {
